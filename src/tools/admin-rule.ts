@@ -4,9 +4,10 @@
 
 import { z } from "zod"
 import { DOMParser } from "@xmldom/xmldom"
-import type { LawApiClient } from "../lib/api-client.js"
+import { LAW_API_MAX_DISPLAY, type LawApiClient } from "../lib/api-client.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError, noResultHint } from "../lib/errors.js"
+import { parseTotalCnt } from "../lib/xml-parser.js"
 
 // search_admin_rule 스키마
 export const SearchAdminRuleSchema = z.object({
@@ -26,6 +27,9 @@ export async function searchAdminRule(
     const xmlText = await apiClient.searchAdminRule({
       query: input.query,
       knd: input.knd,
+      // display를 API에 넘기지 않으면 법제처 기본값(20건)만 조회돼
+      // display=50 같은 호출이 조용히 20건으로 잘렸다.
+      display: Math.min(input.display, LAW_API_MAX_DISPLAY),
       apiKey: input.apiKey
     })
 
@@ -38,7 +42,16 @@ export async function searchAdminRule(
       return noResultHint(input.query || "", "행정규칙")
     }
 
-    let resultText = `행정규칙 검색 결과 (총 ${rules.length}건):\n\n`
+    // "총 N건"은 법제처가 보고한 totalCnt. 조회 건수(rules.length)를 총계로 쓰면
+    // 「감독규정」(실제 총 88건)이 "총 20건"으로 보고돼 호출자가 전량으로 오인한다.
+    const fetchedCount = rules.length
+    const totalCnt = Math.max(parseTotalCnt(xmlText), fetchedCount)
+
+    let resultText = `행정규칙 검색 결과 (총 ${totalCnt}건`
+    if (totalCnt > fetchedCount) {
+      resultText += ` 중 ${fetchedCount}건 조회`
+    }
+    resultText += `):\n\n`
 
     const display = Math.min(rules.length, input.display)
 

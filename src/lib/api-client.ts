@@ -9,6 +9,9 @@ import { getLawApiBaseUrl } from "./law-url-config.js"
 
 const LAW_API_BASE = getLawApiBaseUrl()
 
+/** 법제처 lawSearch.do의 display 상한(실측). 더 큰 값을 보내도 100건에서 잘린다. */
+export const LAW_API_MAX_DISPLAY = 100
+
 export class LawApiClient {
   private defaultApiKey: string
 
@@ -193,6 +196,7 @@ export class LawApiClient {
   async searchAdminRule(params: {
     query: string
     knd?: string
+    display?: number
     apiKey?: string
   }): Promise<string> {
     const apiParams = new URLSearchParams({
@@ -203,6 +207,7 @@ export class LawApiClient {
     })
 
     if (params.knd) apiParams.append("knd", params.knd)
+    if (params.display && params.display > 0) apiParams.append("display", String(params.display))
 
     const url = `${LAW_API_BASE}/lawSearch.do?${apiParams.toString()}`
     const response = await fetchWithRetry(url)

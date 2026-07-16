@@ -41,6 +41,16 @@ export function extractTag(content: string, tag: string): string {
 }
 
 /**
+ * 검색 응답의 totalCnt(서버측 전체 매칭 건수) 추출.
+ * 조회해 온 항목 수와 다르다 — display로 잘린 경우 totalCnt가 더 크다.
+ * parseSearchXML을 쓰지 않고 DOMParser로 항목을 읽는 도구(search_law 등)용.
+ */
+export function parseTotalCnt(xml: string): number {
+  const n = parseInt(extractTag(xml, "totalCnt") || "0", 10)
+  return Number.isFinite(n) ? n : 0
+}
+
+/**
  * 검색 결과 XML 파싱
  * @param xml 전체 XML 문자열
  * @param rootTag 루트 태그 (예: PrecSearch, Expc, Decc)

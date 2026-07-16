@@ -4,18 +4,26 @@
 
 import { z } from "zod"
 import { DOMParser } from "@xmldom/xmldom"
-import type { LawApiClient } from "../lib/api-client.js"
+import { LAW_API_MAX_DISPLAY, type LawApiClient } from "../lib/api-client.js"
 import { lawCache } from "../lib/cache.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError, noResultHint } from "../lib/errors.js"
 import { expandLawQuery, normalizeAliasKey, resolveLawAlias } from "../lib/search-normalizer.js"
 import { buildUpcomingNotes, fetchUpcomingLaws } from "../lib/upcoming-laws.js"
+import { parseTotalCnt } from "../lib/xml-parser.js"
 import { searchAdminRule } from "./admin-rule.js"
 import { searchOrdinance } from "./ordinance-search.js"
 
+// API 조회 건수는 표시 건수(display)와 분리한다.
+// 법제처 API는 법령명 LIKE 부분검색 + 가나다순 정렬이라 "상법"(총 56건)은
+// 「보상법」·「배상법」 등에 밀려 뒤쪽에 온다. 앞 N건만 조회하면 정작 「상법」이
+// 도착하지 못해 아래 정확매칭 분리 로직이 입력 자체를 받지 못한다.
+// display를 낮춘 호출(display=3 등)이 정확매칭을 깨뜨릴 수 없도록 조회는 항상 상한까지 한다.
+const FETCH_COUNT = LAW_API_MAX_DISPLAY
+
 export const SearchLawSchema = z.object({
   query: z.string().describe("검색할 법령명 (예: '관세법', 'fta특례법', '화관법')"),
-  display: z.number().optional().default(50).describe("최대 결과 개수 (기본 50 — 짧은 법령명 정확매칭 누락 방지)"),
+  display: z.number().optional().default(50).describe("표시할 최대 결과 개수 (표시 전용 — API 조회는 항상 상한까지 하므로 낮춰도 정확매칭이 누락되지 않음)"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달")
 })
 
@@ -32,7 +40,13 @@ interface LawHit {
   lawType: string
 }
 
-function parseLawsXml(xmlText: string): LawHit[] {
+interface LawSearchResult {
+  laws: LawHit[]
+  /** 법제처가 보고한 서버측 전체 매칭 건수. display로 잘렸으면 laws.length보다 크다. */
+  totalCnt: number
+}
+
+export function parseLawsXml(xmlText: string): LawSearchResult {
   const doc = new DOMParser().parseFromString(xmlText, "text/xml")
   const out: LawHit[] = []
   const nodes = doc.getElementsByTagName("law")
@@ -49,7 +63,8 @@ function parseLawsXml(xmlText: string): LawHit[] {
       lawType: n.getElementsByTagName("법령구분명")[0]?.textContent || "",
     })
   }
-  return out
+  // totalCnt가 없는 응답이면 조회 건수로 폴백 (기존 동작 유지)
+  return { laws: out, totalCnt: Math.max(parseTotalCnt(xmlText), out.length) }
 }
 
 // 법제처 API는 특정 쿼리("AI법" 등)에서 검색어를 무시하고 무관한 법령 목록을 반환할 때가 있음.
@@ -98,26 +113,25 @@ export async function searchLaw(
       }
     }
 
-    let xmlText = await apiClient.searchLaw(input.query, input.apiKey, input.display)
-    let laws = parseLawsXml(xmlText)
+    let searchResult = parseLawsXml(await apiClient.searchLaw(input.query, input.apiKey, FETCH_COUNT))
     let usedQuery = input.query
 
     // 0건이면 약칭/오타 확장 쿼리로 자동 재시도
-    if (laws.length === 0) {
+    if (searchResult.laws.length === 0) {
       const { expanded } = expandLawQuery(input.query)
       for (const expandedQuery of expanded) {
         if (expandedQuery === input.query) continue
-        const candidateXml = await apiClient.searchLaw(expandedQuery, input.apiKey, input.display)
-        const candidates = parseLawsXml(candidateXml)
+        const candidate = parseLawsXml(await apiClient.searchLaw(expandedQuery, input.apiKey, FETCH_COUNT))
         // 확장쿼리와 무관한 목록(법제처가 쿼리 무시)은 버리고 다음 확장쿼리 시도
-        if (candidates.length > 0 && hasRelatedHit(candidates, expandedQuery)) {
-          xmlText = candidateXml
-          laws = candidates
+        if (candidate.laws.length > 0 && hasRelatedHit(candidate.laws, expandedQuery)) {
+          searchResult = candidate
           usedQuery = expandedQuery
           break
         }
       }
     }
+
+    const laws = searchResult.laws
 
     if (laws.length === 0) {
       // 공포됐지만 미시행인 신규 법령은 현행(target=law) 검색에 안 잡힘 → 시행예정 보조검색
@@ -191,7 +205,17 @@ export async function searchLaw(
       else partial.push(h)
     }
 
-    let resultText = `검색 결과 (총 ${laws.length}건`
+    // "총 N건"은 법제처가 보고한 totalCnt여야 한다. 조회 건수(laws.length)를 총계로 쓰면
+    // display=3인 「상법」 검색(실제 총 56건)이 "총 3건"으로 보고돼
+    // 호출자가 "법제처가 3건밖에 못 찾았다 = API 한계"로 오인한다.
+    const fetchedCount = laws.length
+    const totalCnt = searchResult.totalCnt
+    const isTruncated = totalCnt > fetchedCount
+
+    let resultText = `검색 결과 (총 ${totalCnt}건`
+    if (isTruncated) {
+      resultText += ` 중 ${fetchedCount}건 조회`
+    }
     if (usedQuery !== input.query) {
       resultText += `, 확장쿼리: "${usedQuery}"`
     }
@@ -206,8 +230,10 @@ export async function searchLaw(
       }
     }
 
-    if (partial.length > 0) {
-      const partialShown = Math.min(partial.length, Math.max(0, input.display - exact.length))
+    // 조회량과 표시량이 분리되어 partial.length가 display를 넘을 수 있다.
+    // 표시할 게 없으면 헤더만 남는 빈 섹션이 되므로 통째로 생략.
+    const partialShown = Math.min(partial.length, Math.max(0, input.display - exact.length))
+    if (partialShown > 0) {
       resultText += `📂 부분매칭 (${partial.length}건 중 ${partialShown}건 표시):\n`
       for (let i = 0; i < partialShown; i++) {
         counter++
@@ -221,16 +247,24 @@ export async function searchLaw(
     const upcomingNotes = buildUpcomingNotes(laws, upcoming)
     if (upcomingNotes) resultText += upcomingNotes
 
-    // 다음 단계 힌트: 정확매칭이 있으면 그 첫 항목, 없으면 부분매칭 첫 항목 안내
-    const primary = exact[0] || partial[0]
+    // 다음 단계 힌트는 정확매칭이 있을 때만 낸다.
+    // 정확매칭이 없는데 부분매칭 첫 항목으로 힌트를 만들면 "상법" 검색에
+    // 「1980년해직공무원의보상등에관한특별조치법」 전문을 권하게 되고,
+    // 💡가 ⚠️보다 먼저 나와 LLM이 무관한 법을 그대로 인용할 위험이 있다.
+    const primary = exact[0]
     if (primary) {
       resultText += `💡 다음: get_law_text(mst="${primary.mst}") 로 「${primary.name}」 조문 전문. 특정 조문만은 jo="제N조" 추가.\n`
       if (primary.statusCode === "연혁") {
         resultText += `⚠️ 위 법령은 **연혁(과거버전)** 입니다. 현행 기준 답변에는 [현행] 표시된 법령의 MST를 사용하세요.\n`
       }
-    }
-    if (exact.length === 0 && laws.length > 0) {
-      resultText += `⚠️ 정확매칭 없음 — 법제처 API의 부분 LIKE 검색 특성상 위 결과는 법령명에 "${input.query}"가 포함된 모든 법령입니다. 의도한 법령이 없으면 정식 법령명으로 재검색하세요.\n`
+    } else {
+      // 정확매칭 0건의 원인을 조건부로 구분한다.
+      // 전량 조회에도 없으면 LIKE 특성이 맞지만, 잘려서 못 본 것이라면 API 특성 탓이 아니다.
+      // 원인을 뭉뚱그려 "API의 LIKE 검색 특성"으로 안내하면 호출자가 조회 범위 문제를
+      // API 한계로 오귀인한다.
+      resultText += isTruncated
+        ? `⚠️ 정확매칭 없음 — "${input.query}" 매칭 ${totalCnt}건 중 상위 ${fetchedCount}건만 조회했습니다(법제처 API display 상한 ${LAW_API_MAX_DISPLAY}건). 의도한 법령이 조회 범위 밖일 수 있으니 정식 법령명으로 좁혀 재검색하세요.\n`
+        : `⚠️ 정확매칭 없음 — 법제처 API의 법령명 LIKE 부분검색 특성상 위 ${totalCnt}건이 법령명에 "${input.query}"가 포함된 법령 전부입니다. 의도한 법령이 없으면 정식 법령명으로 재검색하세요.\n`
     }
 
     // Cache the result (1 hour TTL)
