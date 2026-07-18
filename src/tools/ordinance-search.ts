@@ -4,7 +4,7 @@
 
 import { z } from "zod"
 import type { LawApiClient } from "../lib/api-client.js"
-import { normalizeLawSearchText, expandOrdinanceQuery } from "../lib/search-normalizer.js"
+import { normalizeAliasKey, normalizeLawSearchText, expandOrdinanceQuery } from "../lib/search-normalizer.js"
 import { parseSearchXML, extractTag } from "../lib/xml-parser.js"
 import { truncateResponse } from "../lib/schemas.js"
 import { formatToolError } from "../lib/errors.js"
@@ -115,9 +115,17 @@ export async function searchOrdinance(
       output += `\n`
     }
 
-    // 다음 단계 힌트 — 자치법규 ID로 본문 조회 유도
+    // 다음 단계 힌트 — 자치법규 ID로 본문 조회 유도.
+    // 단, 첫 결과가 쿼리와 무관하면 그 id를 찍어주지 않는다: 첫 결과는 단지 LIKE 1위일 뿐이라
+    // 의도한 조례가 뒤에 있을 때 💡가 엉뚱한 조례 전문으로 LLM을 유도한다
+    // (search_law가 부분매칭 첫 항목으로 무관한 법 전문을 권하던 것과 같은 형태).
     if (ordinances.length > 0 && ordinances[0].자치법규일련번호) {
-      output += `💡 다음: get_ordinance(id="${ordinances[0].자치법규일련번호}") 로 본문 조회. 원하는 규정 없으면 상위 법령 검색도 고려 (예: 휴직·복무·징계 → 지방공무원법).\n`
+      const firstNameKey = normalizeAliasKey(ordinances[0].자치법규명 || "")
+      const qTokens = usedQuery.split(/\s+/).map(normalizeAliasKey).filter(t => t.length >= 2)
+      const firstIsRelated = qTokens.length > 0 && qTokens.every(t => firstNameKey.includes(t))
+      output += firstIsRelated
+        ? `💡 다음: get_ordinance(id="${ordinances[0].자치법규일련번호}") 로 본문 조회. 원하는 규정 없으면 상위 법령 검색도 고려 (예: 휴직·복무·징계 → 지방공무원법).\n`
+        : `💡 위 목록에서 원하는 자치법규를 고른 뒤 get_ordinance(id="<자치법규일련번호>") 로 본문 조회. 원하는 규정 없으면 상위 법령 검색도 고려 (예: 휴직·복무·징계 → 지방공무원법).\n`
     }
 
     return {
