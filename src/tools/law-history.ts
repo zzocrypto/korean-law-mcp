@@ -11,7 +11,7 @@ import { formatToolError } from "../lib/errors.js"
 export const LawHistorySchema = z.object({
   regDt: z.string().describe("법령 변경일자 (YYYYMMDD, 예: '20240101')"),
   org: z.string().optional().describe("소관부처코드 (선택)"),
-  display: z.number().optional().default(20).describe("결과 개수 (기본값: 20, 최대: 100)"),
+  display: z.number().min(1).max(100).optional().default(20).describe("결과 개수 (기본값: 20, 최대: 100)"),
   page: z.number().optional().default(1).describe("페이지 번호 (기본값: 1)"),
   apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달")
 })
