@@ -38,6 +38,12 @@ function renderNoPrecedentResult(result: StructuredPrecedentSearchResult): strin
   const kw = result.originalArgs.query || result.originalArgs.caseNumber || "관련 키워드"
   const keywords = kw.trim().split(/\s+/)
   const lines = [`[NOT_FOUND] '${kw}' 판례 검색 결과가 없습니다.`, "", "⚠️ LLM은 판례를 추측/생성하지 마세요. 사용자에게 '검색 실패'를 보고하세요."]
+  // 날짜필터가 조회 페이지의 결과를 전부 걸러낸 경우 — 서버엔 매칭이 있으므로
+  // "판례 자체가 없다"로 오독하지 않게 원인을 구분해 안내
+  if ((result.originalArgs.fromDate || result.originalArgs.toDate) && result.totalCount > 0) {
+    lines.push("")
+    lines.push(`ℹ️ 서버 매칭은 총 ${result.totalCount}건(기간 무관) 있으나, 조회된 ${result.page}페이지 내에 기간 일치 건이 없습니다. page를 넘기거나 기간을 넓혀 재시도하세요.`)
+  }
   if (keywords.length >= 2) {
     lines.push("")
     lines.push("힌트: 법제처 API는 공백 구분 키워드를 AND 조건으로 처리합니다. 키워드가 많을수록 결과가 줄어듭니다.")
@@ -62,9 +68,17 @@ export function renderPrecedentSearchResult(result: StructuredPrecedentSearchRes
   const args = result.originalArgs
   if (result.hits.length === 0) return renderNoPrecedentResult(result)
 
-  let output = `판례 검색 결과 (총 ${result.totalCount}건, ${result.page}페이지)`
-  if (args.fromDate || args.toDate) {
+  const dateFiltered = !!(args.fromDate || args.toDate)
+  let output: string
+  if (dateFiltered) {
+    // 날짜필터는 조회된 페이지에만 적용되는 클라이언트측 필터 — 잔존수를 "총"으로
+    // 표기하면 기간 내 전체 건수로 오독된다. 서버 총계와 구분해 표기.
+    // (기간 밖 완화 폴백 결과가 섞일 수 있어 "기간 일치"라 단정하지 않는다 —
+    //  각 항목의 "요청 기간 밖" 표기와 검색 보정 각주가 그 구분을 담당)
+    output = `판례 검색 결과 (${result.hits.length}건 표시 — 서버 매칭 총 ${result.totalCount}건(기간 무관), ${result.page}페이지)`
     output += ` [기간: ${args.fromDate || "시작"} ~ ${args.toDate || "종료"}]`
+  } else {
+    output = `판례 검색 결과 (총 ${result.totalCount}건, ${result.page}페이지)`
   }
   output += `:\n\n`
 
@@ -89,6 +103,10 @@ export function renderPrecedentSearchResult(result: StructuredPrecedentSearchRes
     const scope = attempt.search === 2 ? "본문검색" : "제목검색"
     const dateNote = attempt.outOfRequestedDateRange ? ", 요청 기간 밖 결과 포함" : ""
     output += `검색 보정: ${attempt.reason}="${label}" (${scope}${dateNote})\n\n`
+  }
+
+  if (dateFiltered && result.totalCount > result.hits.length) {
+    output += `⚠️ 날짜 필터는 이 페이지에 조회된 결과에만 적용됐습니다 — 위 건수는 기간 내 전체가 아닙니다. 기간 내 전수 확인이 필요하면 page를 넘기며 재조회하세요.\n`
   }
 
   if (result.hits[0]?.id) {

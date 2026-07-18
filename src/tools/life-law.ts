@@ -150,7 +150,7 @@ function renderAiLawSearchResult(
     });
   }
 
-  if (totalCount === 0 || items.length === 0) {
+  if (totalCount === 0) {
     return noResultHint(args.query || "", "생활법령") as ToolResponse;
   }
 
@@ -162,9 +162,29 @@ function renderAiLawSearchResult(
   };
   const searchTypeName = searchTypeNames[searchType];
 
-  const displayCount = args.lawTypes ? items.length : totalCount;
-  const filterNote = args.lawTypes ? ` [필터: ${args.lawTypes.join(', ')}]` : '';
-  let output = `지능형 법령검색 결과 (${searchTypeName}, ${displayCount}건${filterNote}):\n\n`;
+  const typeFiltered = !!(args.lawTypes && args.lawTypes.length > 0);
+  if (items.length === 0 && !typeFiltered) {
+    return noResultHint(args.query || "", "생활법령") as ToolResponse;
+  }
+  if (items.length === 0) {
+    // lawTypes 필터가 조회 페이지의 결과를 전부 걸러낸 경우 — 부재로 오독 방지
+    return {
+      content: [{
+        type: "text",
+        text: `[NOT_FOUND] 조회된 ${parsedItems.length}건 내에 [${(args.lawTypes || []).join(", ")}] 유형이 없습니다.\n` +
+              `ℹ️ 서버 매칭은 총 ${totalCount}건(유형 무관) 있습니다. 필터를 빼거나 display를 늘려 재시도하세요.\n` +
+              `⚠️ LLM은 "해당 유형 없음"으로 단정하지 마세요 — 조회된 페이지만 확인된 상태입니다.`,
+      }],
+      isError: true,
+    } as ToolResponse;
+  }
+
+  // 유형 필터는 조회된 페이지에만 적용되는 클라이언트측 필터 — 잔존수만 표기하면
+  // 그 유형의 전체 건수로 오독된다. 서버 총계와 구분해 표기.
+  const filterNote = typeFiltered ? ` [필터: ${args.lawTypes!.join(', ')}]` : '';
+  let output = typeFiltered
+    ? `지능형 법령검색 결과 (${searchTypeName}, 필터 일치 ${items.length}건 표시 — 서버 매칭 총 ${totalCount}건(유형 무관, 조회 ${parsedItems.length}건)${filterNote}):\n\n`
+    : `지능형 법령검색 결과 (${searchTypeName}, ${totalCount}건${filterNote}):\n\n`;
 
   for (const item of items) {
     if (searchType === "0" || searchType === "2") {

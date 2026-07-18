@@ -40,9 +40,11 @@ export async function searchInterpretations(
     const result = parseInterpretationXML(xmlText);
     const currentPage = result.page;
     let expcs = result.items;
+    const fetchedCount = expcs.length;
+    const dateFiltered = !!(args.fromDate || args.toDate);
 
-    // 날짜 범위 필터링 (클라이언트 사이드)
-    if (args.fromDate || args.toDate) {
+    // 날짜 범위 필터링 (클라이언트 사이드 — 조회된 이 페이지에만 적용됨)
+    if (dateFiltered) {
       expcs = expcs.filter(e => {
         const d = (e.회신일자 || "").replace(/[.\-\s]/g, "")
         if (!d) return true
@@ -51,15 +53,32 @@ export async function searchInterpretations(
         return true
       })
     }
-    const totalCount = (args.fromDate || args.toDate) ? expcs.length : result.totalCnt;
+    // "총 N건"은 항상 서버측 totalCnt — 필터 잔존수를 총계로 내보내면
+    // "기간 내 해석례는 총 8건"류 오답이 된다 (필터는 한 페이지만 봤을 뿐).
+    const totalCount = result.totalCnt;
 
     if (totalCount === 0) {
       return noResultHint(args.query || "", "해석례")
     }
+    if (expcs.length === 0) {
+      // 서버엔 매칭이 있으나 조회 페이지 내 기간 일치가 0건 — 부재로 오독 방지
+      return {
+        content: [{
+          type: "text",
+          text: `[NOT_FOUND] 조회된 ${currentPage}페이지(${fetchedCount}건) 내에 기간 일치 해석례가 없습니다.\n` +
+                `ℹ️ 서버 매칭은 총 ${totalCount}건(기간 무관) 있습니다. page를 넘기거나 기간을 넓혀 재시도하세요.\n` +
+                `⚠️ LLM은 "해당 기간 해석례 없음"으로 단정하지 마세요 — 이 페이지만 확인된 상태입니다.`,
+        }],
+        isError: true,
+      }
+    }
 
-    let output = `해석례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지)`;
-    if (args.fromDate || args.toDate) {
+    let output: string;
+    if (dateFiltered) {
+      output = `해석례 검색 결과 (기간 일치 ${expcs.length}건 표시 — 서버 매칭 총 ${totalCount}건(기간 무관), ${currentPage}페이지)`;
       output += ` [기간: ${args.fromDate || "시작"} ~ ${args.toDate || "종료"}]`
+    } else {
+      output = `해석례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지)`;
     }
     output += `:\n\n`;
 
@@ -72,6 +91,10 @@ export async function searchInterpretations(
         output += `  링크: ${expc.법령해석례상세링크}\n`;
       }
       output += `\n`;
+    }
+
+    if (dateFiltered && totalCount > fetchedCount) {
+      output += `⚠️ 날짜 필터는 이 페이지에 조회된 ${fetchedCount}건에만 적용됐습니다 — 위 건수는 기간 내 전체가 아닙니다. 전수 확인이 필요하면 page를 넘기며 재조회하세요.\n`;
     }
 
     // 후속 도구 안내 제거 (LLM이 이미 도구 목록을 알고 있음)

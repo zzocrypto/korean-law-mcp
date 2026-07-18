@@ -101,8 +101,11 @@ function hasDateRange(args: SearchPrecedentsInput): boolean {
   return !!(args.fromDate || args.toDate)
 }
 
-function resultTotalCount(args: SearchPrecedentsInput, attempt: PrecedentSearchAttempt, hits: PrecedentHit[]): number {
-  return hasDateRange(args) ? hits.length : attempt.totalCount
+// 항상 서버측 총 매칭 건수를 보고한다. 날짜필터는 조회된 한 페이지에만 적용되는
+// 클라이언트측 필터라, 필터 잔존수를 "총 N건"으로 내보내면
+// "2024년 손해배상 판례는 총 2건"류의 중대 오답을 낳는다 (실제 서버 매칭 수백 건).
+function resultTotalCount(_args: SearchPrecedentsInput, attempt: PrecedentSearchAttempt, _hits: PrecedentHit[]): number {
+  return attempt.totalCount
 }
 
 function toHit(
