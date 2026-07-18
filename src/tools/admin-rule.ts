@@ -306,7 +306,10 @@ export async function compareAdminRuleOldNew(
     const parser = new DOMParser()
     const doc = parser.parseFromString(xmlText, "text/xml")
 
-    const rules = doc.getElementsByTagName("admrul")
+    // 실제 응답(OldAndNewLawSearch)의 항목 태그는 <oldAndNew>다 — 종전 코드는
+    // 존재하지 않는 <admrul>을 찾아 매 호출 0건 → 검색 경로가 한 번도 동작한 적 없었다
+    // (get_law_abbreviations와 동일 부류, 라이브 스모크에서 발견).
+    const rules = doc.getElementsByTagName("oldAndNew")
     if (rules.length === 0) {
       return noResultHint(input.query || "", "행정규칙 신구법")
     }
@@ -324,13 +327,16 @@ export async function compareAdminRuleOldNew(
     const display = Math.min(rules.length, 20)
     for (let i = 0; i < display; i++) {
       const rule = rules[i]
-      const name = rule.getElementsByTagName("행정규칙명")[0]?.textContent || "알 수 없음"
-      const ruleId = rule.getElementsByTagName("행정규칙ID")[0]?.textContent || ""
+      // 필드도 실제 응답 기준: 신구법명/신구법ID (행정규칙명/행정규칙ID 아님)
+      const name = rule.getElementsByTagName("신구법명")[0]?.textContent || "알 수 없음"
+      const ruleId = rule.getElementsByTagName("신구법ID")[0]?.textContent || ""
       const promDate = rule.getElementsByTagName("발령일자")[0]?.textContent || ""
+      const rrCls = rule.getElementsByTagName("제개정구분명")[0]?.textContent || ""
       const orgName = rule.getElementsByTagName("소관부처명")[0]?.textContent || ""
 
       resultText += `${i + 1}. ${name}\n`
       resultText += `   - 행정규칙ID: ${ruleId}\n`
+      if (rrCls) resultText += `   - 제개정구분: ${rrCls}\n`
       resultText += `   - 발령일: ${promDate}\n`
       resultText += `   - 소관부처: ${orgName}\n\n`
     }
