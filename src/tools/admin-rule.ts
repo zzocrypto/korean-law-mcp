@@ -293,11 +293,13 @@ export async function compareAdminRuleOldNew(
     }
 
     // 검색: lawSearch.do, target=admrulOldAndNew
+    // display를 넘기지 않으면 법제처 기본값(20건)만 조회돼 나머지가 조용히 잘린다
+    // (search_admin_rule과 동일 결함이 여기에도 있었음 — 「감독규정」 실제 88건).
     const xmlText = await apiClient.fetchApi({
       endpoint: "lawSearch.do",
       target: "admrulOldAndNew",
       type: "XML",
-      extraParams: { query: String(input.query) },
+      extraParams: { query: String(input.query), display: String(LAW_API_MAX_DISPLAY) },
       apiKey: input.apiKey
     })
 
@@ -309,7 +311,15 @@ export async function compareAdminRuleOldNew(
       return noResultHint(input.query || "", "행정규칙 신구법")
     }
 
-    let resultText = `행정규칙 신구법 검색 결과 (총 ${rules.length}건):\n\n`
+    // "총 N건"은 법제처 totalCnt — 조회 건수를 총계로 쓰면 잘림이 전량으로 위장된다.
+    const fetchedCount = rules.length
+    const totalCnt = Math.max(parseTotalCnt(xmlText), fetchedCount)
+
+    let resultText = `행정규칙 신구법 검색 결과 (총 ${totalCnt}건`
+    if (totalCnt > fetchedCount) {
+      resultText += ` 중 ${fetchedCount}건 조회`
+    }
+    resultText += `):\n\n`
 
     const display = Math.min(rules.length, 20)
     for (let i = 0; i < display; i++) {
@@ -323,6 +333,10 @@ export async function compareAdminRuleOldNew(
       resultText += `   - 행정규칙ID: ${ruleId}\n`
       resultText += `   - 발령일: ${promDate}\n`
       resultText += `   - 소관부처: ${orgName}\n\n`
+    }
+
+    if (rules.length > display) {
+      resultText += `... 외 ${rules.length - display}건 (생략 — 정식 명칭으로 좁혀 재검색 권장)\n`
     }
 
     // 후속 도구 안내 제거 (LLM이 이미 도구 목록을 알고 있음)
