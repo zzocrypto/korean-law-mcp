@@ -41,7 +41,17 @@ export async function advancedSearch(
     const targetResults = await Promise.all(
       searchTargets.map(target => searchByType(apiClient, target, keywords, input, input.apiKey))
     )
-    results = targetResults.flat()
+    results = targetResults.flatMap(r => r.items)
+
+    // 대상별 실패 수집 — 전체 실패면 에러로 표면화(빈 결과로 위장 금지),
+    // 부분 실패면 결과 상단에 해당 유형 누락을 명시
+    const typeLabels: Record<string, string> = { law: "법령", admin_rule: "행정규칙", ordinance: "자치법규" }
+    const failures = searchTargets
+      .map((t, i) => ({ label: typeLabels[t] || t, error: targetResults[i].error }))
+      .filter((f): f is { label: string, error: string } => !!f.error)
+    if (failures.length === searchTargets.length && results.length === 0) {
+      throw new Error(`법제처 API 조회 실패 — ${failures.map(f => `${f.label}: ${f.error}`).join(" / ")}. 일시 장애일 수 있으니 잠시 후 재시도하세요.`)
+    }
 
     // AND/OR 연산 적용
     if (input.operator === "AND" && keywords.length > 1) {
@@ -58,6 +68,10 @@ export async function advancedSearch(
 
     // 결과 포맷
     let resultText = `고급 검색 결과 (${results.length}건)\n\n`
+    for (const f of failures) {
+      resultText += `⚠️ ${f.label} 검색 실패(${f.error}) — 해당 유형 결과가 누락됐습니다. 재시도 권장.\n`
+    }
+    if (failures.length > 0) resultText += `\n`
     resultText += `검색어: ${input.query}\n`
     resultText += `연산자: ${input.operator}\n`
     if (input.fromDate || input.toDate) {
@@ -92,17 +106,27 @@ async function searchByType(
   keywords: string[],
   input: AdvancedSearchInput,
   apiKey?: string
-): Promise<Array<{ name: string, id: string, type: string, date: string }>> {
+): Promise<{ items: Array<{ name: string, id: string, type: string, date: string }>, error?: string }> {
   const query = keywords.join(" ")
   const results: Array<{ name: string, id: string, type: string, date: string }> = []
 
   try {
     let xmlText = ""
 
+    // 조회는 100건(API 상한)으로 — AND/기간 필터가 이 결과 위에서 돌기 때문에
+    // 기본 페이지(~20건)만 조회하면 필터 대상이 잘려 display를 늘려도 결과가 늘지 않았다.
+    // (ordinance만 100이던 것을 law/admin_rule에도 맞춤)
     if (type === "law") {
-      xmlText = await apiClient.searchLaw(query, apiKey)
+      xmlText = await apiClient.searchLaw(query, apiKey, 100)
     } else if (type === "admin_rule") {
-      xmlText = await apiClient.searchAdminRule({ query, apiKey })
+      // searchAdminRule은 display 파라미터를 받지 않으므로 fetchApi로 직접 조회
+      xmlText = await apiClient.fetchApi({
+        endpoint: "lawSearch.do",
+        target: "admrul",
+        type: "XML",
+        extraParams: { query, display: "100" },
+        apiKey,
+      })
     } else if (type === "ordinance") {
       xmlText = await apiClient.searchOrdinance({ query, display: 100, apiKey })
     }
@@ -137,11 +161,15 @@ async function searchByType(
       results.push({ name, id, type, date })
     }
   } catch (e) {
-    // 인증/권한 에러는 전파, 그 외는 빈 배열 (부분 실패 허용)
+    // 인증/권한 에러는 즉시 전파. 그 외 인프라 에러(5xx·타임아웃·파싱 실패)는
+    // 삼키지 말고 error로 보고한다 — 조용히 빈 배열을 돌려주면 일시 장애가
+    // "검색 결과 0건"으로 위장되어 LLM이 "그런 법령 없음"으로 단정한다.
+    // (lib/law-search.ts findLaws의 인프라 에러 전파와 같은 원칙)
     if (e instanceof Error && /429|401|403|API 키/.test(e.message)) throw e
+    return { items: results, error: e instanceof Error ? e.message : String(e) }
   }
 
-  return results
+  return { items: results }
 }
 
 /**

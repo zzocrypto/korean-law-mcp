@@ -56,6 +56,11 @@ export async function getAnnexes(
     const toArray = (v: unknown): AnnexItem[] =>
       v == null ? [] : Array.isArray(v) ? v : [v]
 
+    // JSON 파싱 실패(HTML 에러 페이지 등)는 "별표 없음"과 다르다 — 구분 추적.
+    // 전 단계가 파싱 실패였는데 "DB에 없습니다"로 답하면 일시 장애가
+    // "별표 부재"라는 사실 단정으로 위장된다.
+    let parseFailures = 0
+
     const parseAnnexResponse = (jsonText: string): { list: AnnexItem[], type: string } => {
       try {
         const json = JSON.parse(jsonText)
@@ -68,7 +73,8 @@ export async function getAnnexes(
         if (licResult?.licbyl) return { list: toArray(licResult.licbyl), type: "law" }
         return { list: [], type: "law" }
       } catch {
-        // JSON 파싱 실패 (HTML 에러 페이지 등) → 빈 배열 반환하여 fallback 진행
+        // JSON 파싱 실패 → 빈 배열 반환하되 실패로 집계 (fallback은 계속 진행)
+        parseFailures++
         return { list: [], type: "law" }
       }
     }
@@ -134,6 +140,16 @@ export async function getAnnexes(
     }
 
     if (annexList.length === 0) {
+      if (parseFailures > 0) {
+        // 0건의 원인이 (일부라도) 응답 파싱 실패라면 "DB에 없음"으로 단정하지 않는다
+        return notFoundResponse(
+          `"${normalizedLawName}" 별표/서식 조회 중 법제처 응답 이상이 ${parseFailures}회 발생했습니다 (HTML 오류 페이지 등). 별표가 없는 것인지 확인되지 않았습니다.`,
+          [
+            "일시 장애일 수 있으니 잠시 후 재시도",
+            `search_law({ query: "${normalizedLawName}" }) 로 법령명·존재 여부 확인`,
+          ]
+        )
+      }
       return notFoundResponse(
         `"${normalizedLawName}"에 대한 별표/서식이 법제처 DB에 없습니다.`,
         [

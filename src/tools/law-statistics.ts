@@ -49,6 +49,9 @@ async function getRecentChanges(
   // 병렬 API 호출 (동시 요청 5개씩 배치)
   const BATCH_SIZE = 5
   const changes: Array<{ lawName: string, date: string, type: string }> = []
+  // 실패한 일자 추적 — 조용히 빈 배열로 대체하면 언더카운트가
+  // "총 N건 개정"이라는 완결 수치로 위장된다
+  const failedDates: string[] = []
 
   for (let i = 0; i < dateStrings.length; i += BATCH_SIZE) {
     const batch = dateStrings.slice(i, i + BATCH_SIZE)
@@ -74,6 +77,7 @@ async function getRecentChanges(
           }
           return items
         } catch {
+          failedDates.push(dateStr)
           return []
         }
       })
@@ -94,7 +98,12 @@ async function getRecentChanges(
     resultText += `   - 개정구분: ${change.type}\n\n`
   })
 
-  resultText += `\n총 ${changes.length}건의 법령이 개정되었습니다.`
+  if (failedDates.length > 0) {
+    resultText += `\n⚠️ ${failedDates.length}개 일자 조회 실패(${failedDates.slice(0, 5).join(", ")}${failedDates.length > 5 ? " 외" : ""}) — 아래 총계는 하한값입니다. 재시도를 권장합니다.`
+    resultText += `\n총 ${changes.length}건 이상의 법령이 개정되었습니다 (실패 일자 제외 집계).`
+  } else {
+    resultText += `\n총 ${changes.length}건의 법령이 개정되었습니다.`
+  }
 
   return {
     content: [{

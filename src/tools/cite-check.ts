@@ -179,7 +179,8 @@ export async function citeCheck(
       apiClient.fetchApi({
         endpoint: "lawSearch.do",
         target: "prec",
-        extraParams: { search: "2", query: caseNo, display: "50" },
+        // 다인용 판례(리딩케이스) 대비 조회 상한을 API 최대치로
+        extraParams: { search: "2", query: caseNo, display: "100" },
         apiKey: input.apiKey,
       }),
     ])
@@ -193,6 +194,7 @@ export async function citeCheck(
 
     // 4단계: 정밀 스캔 — 전원합의체 > 대법원 > 최신 순으로 최대 3건
     const scanResults: Array<{ item: CitingCase; signals: string[]; context?: string }> = []
+    const scanFailed: CitingCase[] = []   // 본문 조회 실패분 — 조용히 건너뛰면 "미감지"로 위장됨
     if (input.deepScan && citing.length > 0) {
       const prioritized = [...citing].sort((a, b) => {
         if (a.isEnBanc !== b.isEnBanc) return a.isEnBanc ? -1 : 1
@@ -207,7 +209,10 @@ export async function citeCheck(
       )
       details.forEach((d, idx) => {
         const body = String(d?.판례내용 || "")
-        if (!body) return
+        if (!body) {
+          scanFailed.push(prioritized[idx])
+          return
+        }
         const { changeSignals, context } = scanTreatment(body, caseNo)
         scanResults.push({ item: prioritized[idx], signals: changeSignals, context })
       })
@@ -218,15 +223,29 @@ export async function citeCheck(
     const enBancCiting = citing.filter(c => c.isEnBanc)
     const scannedIds = new Set(scanResults.map(r => r.item.판례일련번호))
     const enBancUnscanned = enBancCiting.filter(c => !scannedIds.has(c.판례일련번호))
+    // 조회 상한으로 잘린 후속 인용 — "50건 전부 확인"으로 오독되지 않게 총계 병기
+    const citingFetched = citingParsed.items.length
+    const citingTotal = Math.max(citingParsed.totalCnt, citingFetched)
+    const citingCapNote = citingTotal > citingFetched
+      ? ` (서버 매칭 총 ${citingTotal}건 중 최신 ${citingFetched}건만 조회·분석)`
+      : ""
+
     let verdict: string
     if (changed.length > 0) {
       verdict = `❌ 변경·폐기 신호 감지 — ${changed.map(r => `${r.item.사건번호}(${r.signals.join(", ")})`).join("; ")}\n   ⚠️ 이 판례를 현재 법리로 인용하기 전에 반드시 해당 후속 판결 전문을 확인하세요.`
     } else if (enBancUnscanned.length > 0) {
       // 스캔 안 된 전합 후속이 남아있을 때만 경고 (판례 변경은 전원합의체에서만 가능, 법원조직법 제7조)
       verdict = `⚠️ 미스캔 전원합의체 후속 판결 ${enBancUnscanned.length}건 존재 — 법리 변경 여부 본문 확인 권장 (${enBancUnscanned.slice(0, 3).map(c => c.사건번호).join(", ")})`
+    } else if (scanFailed.length > 0) {
+      // 스캔을 시도했으나 본문 조회가 실패한 경우 — "미감지"로 단정하면
+      // 스캔이 이뤄진 것처럼 위장된다 (일시 장애가 ✅로 둔갑하는 결함)
+      verdict = `⚠️ 후속 인용 ${citing.length}건${citingCapNote} — 정밀 스캔 대상 중 ${scanFailed.length}건 본문 조회 실패로 변경·폐기 여부 미확인 (${scanFailed.slice(0, 3).map(c => c.사건번호).join(", ")}). 일시 장애일 수 있으니 재시도하세요.`
     } else if (citing.length > 0) {
       const enBancNote = enBancCiting.length > 0 ? ` (전원합의체 ${enBancCiting.length}건 포함 정밀 스캔 완료)` : ""
-      verdict = `✅ 후속 인용 ${citing.length}건, 변경·폐기 신호 미감지 — 계속 인용되는 것으로 추정${enBancNote}`
+      const unexaminedNote = citingTotal > citingFetched
+        ? ` — 단, 조회 범위 밖 ${citingTotal - citingFetched}건은 미확인`
+        : ""
+      verdict = `✅ 후속 인용 ${citing.length}건${citingCapNote}, 변경·폐기 신호 미감지 — 계속 인용되는 것으로 추정${enBancNote}${unexaminedNote}`
     } else {
       verdict = `ℹ️ 법제처 수록 범위 내 후속 인용 없음 — 미수록 판례의 인용 가능성은 배제 못 함`
     }
