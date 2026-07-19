@@ -126,7 +126,11 @@ export async function getInterpretationText(
     // API returns fields directly in ExpcService, not nested
     const basic = {
       안건명: expc.안건명,
-      법령해석례번호: expc.법령해석례일련번호,
+      // 공식 해석례번호는 안건번호(예: "12-0368"). 내부 일련ID를 이 라벨로 표기하면
+      // 실재하지 않는 해석례번호를 인용하게 된다 (개선요청 20260719 A-3 — 검색 경로는
+      // 이미 안건번호를 쓰는데 상세 경로만 일련ID를 덮어쓰고 있었음).
+      해석례번호: expc.안건번호,
+      일련번호: expc.법령해석례일련번호 || args.id,
       회신일자: expc.해석일자,
       질의기관명: expc.질의기관명,
       해석기관명: expc.해석기관명
@@ -140,7 +144,8 @@ export async function getInterpretationText(
     let output = `=== ${basic.안건명 || "해석례"} ===\n\n`;
 
     output += `기본 정보:\n`;
-    output += `  해석례번호: ${basic.법령해석례번호 || "N/A"}\n`;
+    output += `  해석례번호: ${basic.해석례번호 || "N/A (공식 번호 미제공 — 인용 시 안건명·회신일자 사용)"}\n`;
+    output += `  내부 일련번호: ${basic.일련번호 || "N/A"} (본 MCP 조회용 — 인용 금지)\n`;
     output += `  회신일자: ${basic.회신일자 || "N/A"}\n`;
     output += `  질의기관: ${basic.질의기관명 || "N/A"}\n`;
     output += `  해석기관: ${basic.해석기관명 || "N/A"}\n\n`;

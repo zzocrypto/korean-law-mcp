@@ -44,7 +44,27 @@ export async function searchConstitutionalDecisions(
     });
 
     // 공통 파서 사용
-    const result = parseConstitutionalXML(xmlText);
+    let result = parseConstitutionalXML(xmlText);
+    let bodySearchFallback = false;
+
+    // 쟁점어 0건 → 결정문 본문검색(search=2) 폴백.
+    // 헌재 사건명은 "구 ○○법 제N조 위헌소원" 형식이라 사건명 색인엔 쟁점어가 아예
+    // 없다 — "명의신탁"이 사건명 검색 0건 / 본문검색 148건 (실측 2026-07-19).
+    // 폴백 없이는 실재하는 결정을 "헌재 결정 없음"으로 답하게 된다.
+    if (result.totalCnt === 0 && args.query && !args.caseNumber) {
+      const bodyXml = await apiClient.fetchApi({
+        endpoint: "lawSearch.do",
+        target: "detc",
+        extraParams: { ...extraParams, search: "2" },
+        apiKey: args.apiKey,
+      });
+      const bodyResult = parseConstitutionalXML(bodyXml);
+      if (bodyResult.totalCnt > 0) {
+        result = bodyResult;
+        bodySearchFallback = true;
+      }
+    }
+
     const totalCount = result.totalCnt;
     const currentPage = result.page;
     const decisions = result.items;
@@ -53,7 +73,12 @@ export async function searchConstitutionalDecisions(
       return noResultHint(args.query || args.caseNumber || "", "헌법재판소 결정")
     }
 
-    let output = `헌재결정례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지):\n\n`;
+    let output = `헌재결정례 검색 결과 (총 ${totalCount}건, ${currentPage}페이지`;
+    if (bodySearchFallback) output += `, 본문검색 폴백`;
+    output += `):\n\n`;
+    if (bodySearchFallback) {
+      output += `ℹ️ 사건명 검색 0건 → 결정문 본문검색으로 재시도한 결과입니다 (헌재 사건명은 "○○법 제N조 위헌소원" 형식이라 쟁점어가 사건명에 없음).\n\n`;
+    }
 
     for (const decision of decisions) {
       output += `[${decision.헌재결정례일련번호}] ${decision.사건명}\n`;
